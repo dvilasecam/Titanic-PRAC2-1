@@ -1,0 +1,277 @@
+
+---
+title: "Tractament del dataset de passatgers del Titànic"
+author: "Cristian Alarcón Sanabria i Daniel Vilaseca Miguel"
+date: "05/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introducció
+
+Seguint les normes del concurs, l'objectiu és predir els supervivents del llistat de passatgers del Titanic, per tant estudiarem la relació de les variables amb les possibilitats de supervivència i també farem uns models per a la seva predicció.
+
+
+# Càrrega, integració i selecció de les dades d'interès a analitzar
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Paquets utilitzats:
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(e1071)
+
+# Primer carreguem les dades dels dos datasets:
+
+test <- read.csv('C:/PRAC2/test.csv',stringsAsFactors = FALSE)
+train <- read.csv('C:/PRAC2/train.csv', stringsAsFactors = FALSE)
+
+# Analitzem les característiques globals dels datasets:
+str(test)
+str(train)
+
+#Podem veure que els dos conjunts coincideixen en 11 columnes de 12, havent-hi una més al conjunt train (variable Survived).
+
+# Creem un nou conjunt de dades ajuntant-ho tot, no utilitzem la funció rbind perquè al tenir un nombre diferent de columnes dona error, utilitzem bind_rows que no dona aquest problema i afegeix NA a la part del conjunt de dades (dataset test) que no tenia la columna de supervivents (variable Survived).
+
+complet <- bind_rows(train,test)
+
+#També emmagatzemem la dimensió de fins on arriben les dades amb supervivents (sense valors nuls) per a quan necessitem veure relacions entre supervivents i altres variables en un futur.
+
+supervivents=dim(train)[1]
+
+
+# Comprovem la nova estructura i veiem que és igual que els originals en quant a variables (mateixes variables que el dataset train) però amb la suma de files (observacions) dels dos fitxers carregats.
+str(complet)
+
+# Vista dels primers 5 registres.
+head(complet, 5)
+
+# Amb la funció distinct comprovem que no hi hagi columnes repetides:
+nrow(complet)
+nrow(distinct(complet, PassengerId))
+
+# Comprovem la correlació entre SibSp i Parch, com les dues variables representen el nombre de familiars de cada passatger, potser són redundants.
+cor(complet[,c(7, 8)])
+# La correlació és baixa. No eliminarem cap variable del dataset.
+```
+
+# Neteja de dades
+
+```{r}
+# Amb summary comprovem si hi ha NA's i amb l'altra comanda fem un sumatori dels espais en blanc que hi hagin a les columnes
+summary(complet)
+colSums(complet=="")
+
+# També podem comprovar quants valors nuls hi ha amb la següent funció:
+colSums(is.na(complet))
+
+# Podem veure que tenim un munt de valors de Age sense completar, el que farem és aplicar la mediana segons la classe a la que pertanyi, ja que segons la classe la mediana és molt diferent.
+
+classMedian<-c(3)
+
+for (i in complet$Pclass){
+  class <- (filter(complet, Pclass==i))
+  classMedian[i]<-median((class$Age),na.rm=TRUE)
+}
+
+complet$Age = round(ifelse(is.na(complet$Age), ifelse(complet$Pclass == 1, classMedian[1], ifelse(complet$Pclass == 2, classMedian[2], classMedian[3])), complet$Age), 0)
+
+# Canviem els buits d'Embarked per la moda d'aquesta columna: "S"
+complet$Embarked[complet$Embarked==""]="S"
+
+# Prenem la mitjana per al valor buit de la variable Fare.
+complet$Fare[is.na(complet$Fare)] <- mean(complet$Fare, na.rm=T)
+
+# Un cop tractades les dades buides:
+colSums(complet=="")
+colSums(is.na(complet))
+
+# Ara contem quants valors únics hi han a cada columna, per a veure que podem passar a factor i estalviar espai a memòria, per ara no ho passarem però després d'analitzar les dades ho farem, ja que la correlació ens dona problemes amb factors.
+apply(complet,2, function(x) length(unique(x)))
+
+# Comprovem possibles outliers a Age i no hi ha gaire a comentar, hi han uns pocs molt vells, perfectament comprensible.
+boxplot(complet$Age, main="Age")
+# L'edat màxima al dataset no és una dada incorrecta.
+max(complet$Age)
+
+# Comprovem possibles outliers a Sibsp, i tot i no ser gaire comú, és possible tenir 8 germans i més en aquella època on les famílies tenien més membres.
+boxplot(complet$SibSp, main="SibSp")
+max(complet$SibSp)
+
+# Comprovem possibles outliers a Parch, que té en compte el nombre de pares/mares i fills. Trobem que no hi ha errors a les dades, ja que tenir 9 és possible, si hi ha algú amb 8 germans és coherent que hi hagi un pare amb 9 fills al mateix vaixell.
+boxplot(complet$Parch, main="Parch")
+max(complet$Parch)
+
+# Ja per últim comprovem valors extrems a les tarifes, veiem alguns valors molt alts, però ens hem informat una mica i hem comprovat que hi havien tarifes de fins a 870 lliures, per tant no s'eliminaran ja que no deixen de ser valors certs.
+boxplot(complet$Fare, main="Fare")
+max(complet$Fare)
+```
+
+
+# Anàlisi de les dades
+
+Primer comprovem la correlació entre els supervivents i els valors numèrics, si hi  ha valors propers a l'1 o -1 hi ha una forta relació, si el valor en canvi és proper al 0 llavors la relació és dèbil.
+```{r}
+#començant per les tarifes, comprovem que el valor de correlació és de 0.25, un valor molt baix, per tant no hi ha relació entre les tarifes i les possibilitats de supervivència.
+# Com les dades de Fare no es distribueixen normalment (com hem comprovat més endavant), hem intentat utilitzar el mètode spearman, que ha donat l'error "Cannot compute correct p-values with ties".
+
+cor.test(complet[1:supervivents,]$Survived,complet[1:supervivents,]$Fare)
+
+#Seguim amb la correlació amb Pclass, on obtenim també un valor força baix, un -0.33, hi ha una mica més de correlació que amb el preu de la tarifa però segueix sent poca cosa aquesta relació.
+
+cor.test(complet[1:supervivents,]$Survived,complet[1:supervivents,]$Pclass)
+
+#També fem la correlació dels germans/esposes o fills/pares amb els supervivents, per a comprovar que tampoc hi ha gaire relació.
+
+cor.test(complet[1:supervivents,]$Survived,complet[1:supervivents,]$SibSp)
+
+
+cor.test(complet[1:supervivents,]$Survived,complet[1:supervivents,]$Parch)
+
+# Amb la funció summary podem comprovar que els atributs PassengerId, Survived i pclass són tractats com a variables numèriques, quan realment són categòriques.
+summary(complet)
+
+# Fins ara no havíem transformat aquestes variables per a no tenir problemes amb les correlacions, ara ja les podem discretitzar.
+# Un cop vists els resultats transformarem a factor les columnes  PassengerId, Survived, Pclass, Sex i Embarked.
+columness<-c("Survived","Pclass","Sex","Embarked","PassengerId")
+for (i in columness){
+  complet[,i] <- as.factor(complet[,i])
+}
+
+summary(complet)
+
+```
+```{r}
+# Procedim a comprovar la normalitat:
+shapiro.test(complet$Age)
+# La variable Age no segueix una distribució normal segons el test Shapiro Wilk. Representem gràficament la distribució de la variable mitjançant un histograma.
+ggplot(data = complet,aes(x=Age)) + geom_histogram(binwidth =5)
+```
+```{r}
+# Procedim a comprovar la normalitat:
+shapiro.test(complet$Fare)
+# La variable Fare no segueix una distribució normal segons el test Shapiro Wilk. Representem gràficament la distribució de la variable:
+ggplot(data = complet,aes(x=Fare)) + geom_histogram(binwidth =10)
+```
+```{r}
+library(car)
+# Procedim a comprovar la homoscedasticitat de la variable Age, tenint en compte que ens interessa conèixer la seva relació amb Survived.
+leveneTest(Age ~ Survived, data = complet)
+fligner.test(Age ~ Survived, data = complet)
+```
+```{r}
+# Procedim a comprovar la homoscedasticitat de la variable Fare, tenint en compte que ens interessa conèixer la seva relació amb Survived.
+leveneTest(Fare ~ Survived, data = complet)
+fligner.test(Fare ~ Survived, data = complet)
+```
+
+Ara comprovarem les relacions amb les variables no numèriques o amb molts pocs valors únics en els que la correlació no ens serveix.
+```{r}
+# Primer observem la relació del sexe del passatger amb survived.
+ggplot(data=complet[1:supervivents,],aes(x=Sex,fill=Survived))+geom_bar()+ylab("recompte")
+
+# Ara compararem amb els ports de sortida (Embarked) i veiem que hi ha més probabilitats de sobreviure si has partit de Cherbourg que de la resta, a la resta no arriba al 50% i aquí es supera, tot i no haver-hi una gran diferència.
+ggplot(data = complet[1:supervivents,],aes(x=Embarked,fill=Survived))+geom_bar(position="fill")+ylab("Supervivents")
+
+
+# Compararem les possibilitats de sobreviure segons la classe ara, com podem veure a menor classe social menors possibilitats de sobreviure.
+ggplot(data = complet[1:supervivents,],aes(x=Pclass,fill=Survived))+geom_bar(position="fill")+ylab("Supervivents")
+```
+
+Ara compararem les possibilitats de supervivència amb les dues variables de familiars, primer amb els germans/esposes i després amb els fills/pares, es pot veure una tendència similar. 
+
+A més fills o més germans majors possibilitats de sobreviure, però és una xifra enganyosa, ja que una persona amb 8 germans segurament algún d'ells sobrevisqui, el mateix podem dir de les famílies amb molts fills, per tant és fins i tot lògic que sobrevisquis, per pura quantitat familiar, fem igualment la correlació i observem que el valor és molt baix i per tant la relació és dèbil.
+```{r}
+ggplot(data = complet[1:supervivents,],aes(x=SibSp,fill=Survived))+geom_bar()+ylab("recompte")
+
+ggplot(data = complet[1:supervivents,],aes(x=Parch,fill=Survived))+geom_bar()+ylab("recompte")
+
+
+
+# Comparació amb l'edat: com hi ha tantes dades les hem ajuntat de cinc en cinc anys, i com es veia tot molt baix en qüestió de números ho hem posat en percentatge al segon gràfic, així s'observa millor per franges el percentatge de supervivents, però sense un dels dos gràfics no té sentit, ja que per exemple mirant el segon veiem que tots els majors de 80 han sobreviscut, en canvi amb l'altre gràfic veiem que només és 1 passatger.
+
+ggplot(data = complet[1:supervivents,],aes(x=Age,fill=Survived))+geom_histogram(binwidth =5)+ylab("recompte")
+ggplot(data = complet[1:supervivents,],aes(x=Age,fill=Survived))+geom_histogram(binwidth = 5, position= "fill")+ylab("percentatge")
+```
+
+Una altra opció per comprovar la relació entre la variable de classe (pclass) del dataset i la variable survived és fer el test Chi-Square. Aquest test ens ajuda a veure la correlació entre 2 variables categòriques.
+```{r}
+# Farem servir el dataset sense valors nuls a la variable survived.
+chisq.test(complet[1:supervivents,]$Survived, complet[1:supervivents,]$Pclass)
+```
+Amb un p-value tan baix rebutgem la hipòtesi nul·la, podem concloure que les variables no són independents.
+
+# Prediccions
+
+A continuació provarem diferents funcions/mètodes que ens ajudin a establir un model per a predir els valors de la variable survived.
+
+Per a comprovar la efectivitat dels nostres models el que farem és dividir la part d'entrenament (part del dataset original sense valors nuls a la variable survived) en dos i així amb una part entrenem i amb l'altra comprovem l'efectivitat del model de predicció fent la mitjana entre encerts i no encerts.
+
+Abans de la comparació això sí com els models acostumen a donar informació probabilística i no concreta el que fem és convertir tot allò per sobre de 0.5 en un 1 i la resta es queda en 0 que són els dos possibles valors de survived (sobreviure=1 o no=0).
+
+```{r echo=TRUE,message=FALSE,warning=FALSE}
+# Dividim en dos parts la part del dataset train original 
+
+entrenament<- complet[1:supervivents,c("Survived","Pclass","Sex","Age","Fare","SibSp","Parch")]
+ind<-sample(1:dim(entrenament)[1],445) # Primera mostra de 445 (la meitat de 891)
+ent1<-entrenament[ind,] # mostra per entrenar amb 445 observacions
+ent2<-entrenament[-ind,] # mostra per comprovar eficàcia
+
+# Primer correrem un model de regressió logística múltiple, on comprovem que SibSp, Fare i Parch aporten molt poc.
+model <- glm(Survived ~.,family=binomial(link='logit'),data=ent1)
+summary(model)
+
+# Ara comprovarem la seva eficàcia
+pred.entrenament <- predict(model,ent2) # fem la predicció en el conjunt ent2
+pred.entrenament <- ifelse(pred.entrenament > 0.5,1,0) # transformem els valors en 0 i 1 (possibles valors de Survived)
+mean(pred.entrenament==ent2$Survived) # calculem la eficàcia
+
+#Ara tornem a crear les dades però amb Survived com a numèric o ens fallaran els altres models
+entrenament<- complet[1:supervivents,c("Survived","Pclass","Sex","Age","Fare","SibSp","Parch")]
+entrenament$Survived<-as.numeric(entrenament$Survived)
+ind<-sample(1:dim(entrenament)[1],445) # Primera mostra de 445 (la meitat de 891)
+ent1<-entrenament[ind,]
+ent2<-entrenament[-ind,]
+
+#Correrem un model svm (support vector machines)
+modelGaussian <- svm(Survived ~.,data=ent1)
+
+#I ara comprovarem la seva efectivitat amb el segon subconjunt, el de test.
+summary(modelGaussian)
+pred.gaussian <- predict(modelGaussian,ent2)
+pred.gaussian <- ifelse(pred.gaussian > 0.5,1,0)
+mean(pred.gaussian==ent2$Survived)
+```
+
+Per últim provarem el mètode de classificació random forest per tenir un altre model que ajudi a predir valors de la variable survived.
+```{r echo=TRUE,message=FALSE,warning=FALSE}
+library(rminer)
+
+# dataset a  utilitzar
+entrenament <- complet[1:supervivents,c("Survived","Pclass","Sex","Age","Fare","SibSp","Parch", "Embarked")]
+
+# utilitzem la funció holdout per dividir el dataset en el conjunt de train i test.
+h <- holdout(entrenament$Survived, ratio=2/3, mode="stratified")
+data_train <- entrenament[h$tr,]
+data_test <- entrenament[h$ts,]
+
+# executem el random forest
+train_control <- trainControl(method="cv", number=4)
+modelRandomForest <- train(Survived ~., data=data_train, method="rf", trControl= train_control)
+summary(modelRandomForest)
+
+# predicció i matriu de confusió
+pred <- predict(modelRandomForest, newdata=data_test)
+confusionMatrix(pred, data_test$Survived)
+```
+
+Un cop tenim els models ja podríem predir el valor de la variable survived a noves observacions que no disposen d'aquesta dada.
+
+Per últim convertirem el dataset "complet" que hem utilitzat a la paràtica a csv per a la entrega:
+```{r echo=TRUE,message=FALSE,warning=FALSE}
+write.csv(complet, "C:/PRAC2/complet.csv", row.names = FALSE)
+```
