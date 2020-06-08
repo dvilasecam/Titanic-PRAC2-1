@@ -5,6 +5,7 @@ Tipologia i cicle de vida de les dades.
 Alumnes:
 
 Daniel Vilaseca Miguel
+
 Cristian Alarcón Sanabria
 
 # Descripció dels fitxers:
