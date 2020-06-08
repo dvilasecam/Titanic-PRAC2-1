@@ -8,6 +8,7 @@ Daniel Vilaseca Miguel
 
 Cristian Alarcón Sanabria
 
+
 # Descripció dels fitxers:
 
 PRACTICA 2 Tipologia-1: pdf amb les respostes a l'enunciat de la pràctica.
